@@ -26,7 +26,7 @@ from .finance import affordability, allocation, credit_card_advice, money
 from .inputs import (AMOUNT, EXPENSE_CATEGORIES, INCOME_CATEGORIES, category_name,
                      month_label, parse_amount, parse_date, quick_entry, shift_month, today, valid_month)
 from .keyboards import CANCEL_MENU, EXTRA_MENU, MAIN_MENU, categories, inline
-from . import family, recurring, savings_ui
+from . import family, recurring, savings_ui, cashflow_ui, weekly, weekly_ui
 from .session_store import SQLiteStorage
 from .release_runtime import (InFlightUpdates, get_release_version, init_runtime,
                               mark_ui_seen, refresh_menu_if_needed)
@@ -63,6 +63,11 @@ class AccessMiddleware(BaseMiddleware):
     # would permit an excluded member's in-flight handler to keep writing.
     _locks = weakref.WeakKeyDictionary()
 
+    @classmethod
+    def access_lock(cls):
+        loop = asyncio.get_running_loop()
+        return cls._locks.setdefault(loop, asyncio.Lock())
+
     async def __call__(self, handler, event, data):
         user = event.from_user
         message = event.message if isinstance(event, CallbackQuery) else event
@@ -78,9 +83,7 @@ class AccessMiddleware(BaseMiddleware):
                 if rate_limiter.should_notify(user.id):
                     await event.answer('Слишком много запросов подряд. Подождите минуту и попробуйте снова.')
                 return
-        loop = asyncio.get_running_loop()
-        lock = self._locks.setdefault(loop, asyncio.Lock())
-        async with lock:
+        async with self.access_lock():
             return await self._handle(handler, event, data)
 
     async def _handle(self, handler, event, data):
@@ -149,12 +152,14 @@ router.message.outer_middleware(AccessMiddleware())
 router.callback_query.outer_middleware(AccessMiddleware())
 
 
-def create_dispatcher(path) -> Dispatcher:
+def create_dispatcher(path, *, before_drain=None) -> Dispatcher:
     """Track updates before FSM locks; drain before storage/isolation close."""
     tracker = InFlightUpdates()
 
     class DrainingStorage(SQLiteStorage):
         async def close(self):
+            if before_drain is not None:
+                before_drain()
             await tracker.drain(timeout=20)
             await super().close()
 
@@ -381,16 +386,20 @@ async def handle_message(message: Message, state: FSMContext) -> None:
         return
     if command == "/help":
         await state.clear()
-        await message.answer("Запись: кнопка → сумма → категория → подтверждение. Дату и комментарий можно изменить.\n\nкофе 350 рублей\nвчера продукты 1,5к; #дом ужин\n+ зарплата 150000\n\nМожно диктовать текст клавиатуре iPhone. Аудиосообщения и фото чеков пока не распознаются.\n\n/payments — регулярные платежи\n/search #отпуск — поиск по всем месяцам\n/analytics — графики и сравнение расходов\n/charts — график за месяц\n/tips — подсказки по бюджету\n/savings — накопления, цели и резерв\n/family — личный и общий бюджет\n\nМесяц в «Мой бюджет» применяется к истории, лимитам и Excel. Переводы между своими счетами не записывайте как доход или расход. /cancel отменяет ввод.\nОбновления устанавливаются автоматически. Незавершенный ввод сохраняется на 30 дней; после обновления продолжайте диалог. Сохраненные операции и планы остаются в базе.", reply_markup=MAIN_MENU)
+        await message.answer("Запись: кнопка → сумма → категория → подтверждение. Дату и комментарий можно изменить.\n\nкофе 350 рублей\nвчера продукты 1,5к; #дом ужин\n+ зарплата 150000\n\nМожно диктовать текст клавиатуре iPhone. Аудиосообщения и фото чеков пока не распознаются.\n\n/payments — регулярные платежи\n/search #отпуск — поиск по всем месяцам\n/analytics — графики и сравнение расходов\n/charts — график за месяц\n/tips — подсказки по бюджету\n/savings — накопления, цели и резерв\n/forecast — прогноз по датам\n/weekly — обзор недели и добровольная рассылка\n/family — личный и общий бюджет\n\nМесяц в «Мой бюджет» применяется к истории, лимитам и Excel. Переводы между своими счетами не записывайте как доход или расход. /cancel отменяет ввод.\nОбновления устанавливаются автоматически. Незавершенный ввод сохраняется на 30 дней; после обновления продолжайте диалог. Сохраненные операции и планы остаются в базе.", reply_markup=MAIN_MENU)
         return
     menu_texts = {b.text for row in MAIN_MENU.keyboard + EXTRA_MENU.keyboard for b in row}
-    if text in menu_texts or command in ('/family', '/payments', '/search', '/analytics', '/charts', '/tips', '/savings'):
+    if text in menu_texts or command in ('/family', '/payments', '/search', '/analytics', '/charts', '/tips', '/savings', '/forecast', '/weekly'):
         await state.clear()
     if await family.handle_message(message, state, db):
         return
     if await recurring.handle_message(message, state, db, user_id):
         return
     if await savings_ui.handle_message(message, state, db, user_id):
+        return
+    if await cashflow_ui.handle_message(message, state, db, user_id):
+        return
+    if await weekly_ui.handle_message(message, state, db, user_id):
         return
     if text == '📈 Аналитика' or command == '/analytics':
         await show_analytics(message, user_id)
@@ -560,6 +569,10 @@ async def handle_callback(callback: CallbackQuery, state: FSMContext) -> None:
     parts = data.split(":")
     if await savings_ui.handle_callback(callback, state, db, user_id, data, scoped=scoped):
         return
+    if await cashflow_ui.handle_callback(callback, state, db, user_id, data, scoped=scoped):
+        return
+    if await weekly_ui.handle_callback(callback, state, db, user_id, data, scoped=scoped):
+        return
     if not scoped and (data == 'opening' or parts[0] == 'budget'):
         await callback.answer('Откройте настройки или лимиты заново: /menu')
         return
@@ -716,13 +729,16 @@ async def main() -> None:
     logging.getLogger(__name__).info("Database initialized: %s", settings.db_path.resolve())
     logging.getLogger(__name__).info("Access mode: %s", "self-service /start" if public_signup else "allowlist")
     logging.getLogger(__name__).info("Release: %s; persistent dialogs enabled", get_release_version())
-    dispatcher = create_dispatcher(db.path)
+    weekly_stop = asyncio.Event()
+    dispatcher = create_dispatcher(db.path, before_drain=weekly_stop.set)
     await dispatcher.storage.init()
     dispatcher.include_router(router)
     async with Bot(settings.bot_token) as bot:
         await bot.set_my_commands([
             BotCommand(command='menu', description='Открыть бюджет'),
             BotCommand(command='savings', description='Накопления, цели и резерв'),
+            BotCommand(command='forecast', description='Прогноз до следующего дохода'),
+            BotCommand(command='weekly', description='Обзор недели и его расписание'),
             BotCommand(command='payments', description='Регулярные платежи'),
             BotCommand(command='analytics', description='Графики и сравнение расходов'),
             BotCommand(command='charts', description='График расходов за месяц'),
@@ -734,7 +750,20 @@ async def main() -> None:
             BotCommand(command='whoami', description='Узнать свой Telegram ID'),
         ])
         await apply_text_profile(bot, public_signup=public_signup)
-        await dispatcher.start_polling(bot)
+        weekly_task = asyncio.create_task(weekly.run_weekly_worker(
+            bot, db, access_lock=AccessMiddleware.access_lock(), allowed_user_ids=allowed_user_ids,
+            public_signup=public_signup, stop_event=weekly_stop,
+        ), name='weekly-reports')
+        logging.getLogger(__name__).info('Weekly worker started; delivery requires explicit subscription')
+        try:
+            await dispatcher.start_polling(bot, close_bot_session=False)
+        finally:
+            weekly_stop.set()
+            try:
+                await asyncio.wait_for(asyncio.shield(weekly_task), timeout=12)
+            except asyncio.TimeoutError:
+                weekly_task.cancel()
+                await asyncio.gather(weekly_task, return_exceptions=True)
 
 
 if __name__ == "__main__":

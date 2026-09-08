@@ -94,7 +94,8 @@ class SQLiteStorage(BaseStorage):
                 return
             self.path.parent.mkdir(parents=True, exist_ok=True)
             async with aiosqlite.connect(self.path, timeout=30) as connection:
-                await connection.execute("PRAGMA journal_mode=WAL")
+                # Database.init owns journal mode. Reconfiguring it from two
+                # independent storage instances can fail before busy_timeout.
                 await connection.executescript(SCHEMA)
                 await connection.commit()
             self._initialized = True

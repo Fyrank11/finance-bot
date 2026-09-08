@@ -6,6 +6,7 @@ MAIN_MENU = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="🎯 Лимиты"), KeyboardButton(text="📁 Скачать Excel")],
     [KeyboardButton(text="🗓 Платежи"), KeyboardButton(text="📈 Аналитика")],
     [KeyboardButton(text="🌱 Накопления"), KeyboardButton(text="💡 Подсказки")],
+    [KeyboardButton(text="🔮 Прогноз"), KeyboardButton(text="📬 Обзор недели")],
     [KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="👥 Семья")],
     [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="Ещё")],
 ], resize_keyboard=True, input_field_placeholder="Например: продукты 850")
