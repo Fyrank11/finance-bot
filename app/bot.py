@@ -15,7 +15,8 @@ from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, Message
 
 from .backup import backup_before_upgrade
-from .branding import apply_text_profile, welcome_text
+from .access import is_registered, register_user
+from .branding import PRIVACY_TEXT, apply_text_profile, welcome_text
 from .charts import build_chart_data, render_expense_chart
 from .coaching import budget_tips
 from .config import load_settings
@@ -27,10 +28,13 @@ from .inputs import (AMOUNT, EXPENSE_CATEGORIES, INCOME_CATEGORIES, category_nam
 from .keyboards import CANCEL_MENU, EXTRA_MENU, MAIN_MENU, categories, inline
 from . import family, recurring
 from .insights import comparison, limit_status, search_transactions
+from .rate_limit import RateLimiter
 
 router = Router()
 db: Database
 allowed_user_ids: frozenset[int] = frozenset()
+public_signup = False
+rate_limiter = RateLimiter()
 
 
 class Form(StatesGroup):
@@ -57,6 +61,20 @@ class AccessMiddleware(BaseMiddleware):
     _locks = weakref.WeakKeyDictionary()
 
     async def __call__(self, handler, event, data):
+        user = event.from_user
+        message = event.message if isinstance(event, CallbackQuery) else event
+        if public_signup and user and message and message.chat.type == 'private':
+            text = (event.text or '').strip() if isinstance(event, Message) else ''
+            command = text.split('@', 1)[0].split(' ', 1)[0]
+            action = (event.data or '') if isinstance(event, CallbackQuery) else ''
+            expensive = (command in ('/charts', '/analytics')
+                         or text in ('📈 Аналитика', '📁 Скачать Excel')
+                         or action == 'analytics' or action.startswith('charts:')
+                         or ':charts:' in action or action.endswith(':analytics'))
+            if not rate_limiter.allow(user.id, expensive=expensive):
+                if rate_limiter.should_notify(user.id):
+                    await event.answer('Слишком много запросов подряд. Подождите минуту и попробуйте снова.')
+                return
         loop = asyncio.get_running_loop()
         lock = self._locks.setdefault(loop, asyncio.Lock())
         async with lock:
@@ -65,19 +83,34 @@ class AccessMiddleware(BaseMiddleware):
     async def _handle(self, handler, event, data):
         user = event.from_user
         message = event.message if isinstance(event, CallbackQuery) else event
-        if message and message.chat.type == 'private' and isinstance(event, Message) and user:
-            command = (event.text or '').split('@', 1)[0].split(' ', 1)[0]
-            if command == '/whoami':
-                await event.answer(f'Ваш Telegram ID: {user.id}\nДобавьте этот номер в ALLOWED_USER_IDS при настройке бота.')
+        private_user = bool(user and not user.is_bot and user.id > 0
+                            and message and message.chat.type == 'private')
+        if private_user and isinstance(event, Message):
+            command = (event.text or '').strip().split('@', 1)[0].split(' ', 1)[0]
+            if command == '/privacy':
+                await event.answer(PRIVACY_TEXT)
                 return
-            if command == '/start' and not allowed_user_ids:
+            if command == '/whoami':
+                hint = 'Доступ открывается автоматически после /start.' if public_signup else 'Передайте этот номер владельцу бота для подключения.'
+                await event.answer(f'Ваш Telegram ID: {user.id}\n{hint}')
+                return
+            if command == '/start' and public_signup:
+                # Telegram authenticates the sender. Never accept an ID, family
+                # invitation or balance from /start's optional deep-link payload.
+                await register_user(db, user.id)
+            elif command == '/start' and not allowed_user_ids:
                 await event.answer('Бот готов к настройке. Отправьте /whoami, добавьте свой ID в ALLOWED_USER_IDS и перезапустите бота.')
                 return
-        if not user or user.id not in allowed_user_ids:
-            await event.answer("У вас нет доступа к этому боту.")
-            return
-        if not message or message.chat.type != "private":
+        if not private_user:
             await event.answer("Для личного бюджета откройте личный чат с ботом.")
+            return
+        permitted = user.id in allowed_user_ids
+        if public_signup and not permitted:
+            permitted = await is_registered(db, user.id)
+        if not permitted:
+            text = ('Чтобы открыть свой личный бюджет, нажмите «Начать» или отправьте /start. '
+                    'О хранении данных: /privacy.') if public_signup else "У вас нет доступа к этому боту."
+            await event.answer(text)
             return
         state = data.get('state')
         if state is None:
@@ -642,13 +675,15 @@ async def handle_callback(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 async def main() -> None:
-    global db, allowed_user_ids
+    global db, allowed_user_ids, public_signup
     settings = load_settings()
     allowed_user_ids = settings.allowed_user_ids
+    public_signup = settings.public_signup
     db = Database(settings.db_path, settings.timezone)
     await asyncio.to_thread(backup_before_upgrade, settings.db_path)
     await db.init()
     logging.getLogger(__name__).info("Database initialized: %s", settings.db_path.resolve())
+    logging.getLogger(__name__).info("Access mode: %s", "self-service /start" if public_signup else "allowlist")
     dispatcher = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
     dispatcher.include_router(router)
     async with Bot(settings.bot_token) as bot:
@@ -661,9 +696,10 @@ async def main() -> None:
             BotCommand(command='search', description='Поиск записей и меток'),
             BotCommand(command='family', description='Семейный бюджет'),
             BotCommand(command='help', description='Как пользоваться'),
+            BotCommand(command='privacy', description='Как хранятся ваши данные'),
             BotCommand(command='whoami', description='Узнать свой Telegram ID'),
         ])
-        await apply_text_profile(bot)
+        await apply_text_profile(bot, public_signup=public_signup)
         await dispatcher.start_polling(bot)
 
 
