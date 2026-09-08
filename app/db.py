@@ -95,12 +95,14 @@ class Database:
         from .savings import init_savings
         from .cashflow import init_cashflow
         from .weekly import init_weekly
+        from .guides import init_guides
         await init_family(self)
         await init_recurring(self)
         await init_access(self)
         await init_savings(self)
         await init_cashflow(self)
         await init_weekly(self)
+        await init_guides(self)
 
     def _transaction_values(self, kind: str, category: str, amount: float, note: str, occurred_on: str | None) -> tuple:
         if kind not in ("income", "expense"):

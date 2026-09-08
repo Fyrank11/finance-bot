@@ -355,7 +355,8 @@ def test_malformed_callbacks_are_safe_and_habits_offer_no_financial_products(tmp
         for forbidden in ("офз", "депозит", "ставка банка", "купите", "доходность 10%", "50/30/20"):
             assert forbidden not in text
         await chat.tap(chat.button("Постер"))
-        photos = [call for call in chat.session.calls if isinstance(call, SendPhoto)]
+        photos = [call for call in chat.session.calls if isinstance(call, SendPhoto)
+                  and Path(getattr(call.photo, 'path', '')).name == 'savings-poster.png']
         assert len(photos) == 1
         assert Path(photos[0].photo.path).is_file()
         assert "выбираете вы" in photos[0].caption
