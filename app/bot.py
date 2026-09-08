@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import logging
 import re
 import secrets
 import weakref
@@ -13,6 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, Message
 
+from .backup import backup_before_upgrade
 from .config import load_settings
 from .db import Database
 from .export import export_xlsx
@@ -586,7 +588,9 @@ async def main() -> None:
     settings = load_settings()
     allowed_user_ids = settings.allowed_user_ids
     db = Database(settings.db_path, settings.timezone)
+    await asyncio.to_thread(backup_before_upgrade, settings.db_path)
     await db.init()
+    logging.getLogger(__name__).info("Database initialized: %s", settings.db_path.resolve())
     dispatcher = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
     dispatcher.include_router(router)
     async with Bot(settings.bot_token) as bot:
@@ -603,4 +607,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     asyncio.run(main())
