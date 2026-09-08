@@ -11,7 +11,7 @@ from datetime import timedelta
 from aiogram import BaseMiddleware, Bot, Dispatcher, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, Message
 
 from .backup import backup_before_upgrade
@@ -26,7 +26,10 @@ from .finance import affordability, allocation, credit_card_advice, money
 from .inputs import (AMOUNT, EXPENSE_CATEGORIES, INCOME_CATEGORIES, category_name,
                      month_label, parse_amount, parse_date, quick_entry, shift_month, today, valid_month)
 from .keyboards import CANCEL_MENU, EXTRA_MENU, MAIN_MENU, categories, inline
-from . import family, recurring
+from . import family, recurring, savings_ui
+from .session_store import SQLiteStorage
+from .release_runtime import (InFlightUpdates, get_release_version, init_runtime,
+                              mark_ui_seen, refresh_menu_if_needed)
 from .insights import comparison, limit_status, search_transactions
 from .rate_limit import RateLimiter
 
@@ -70,7 +73,7 @@ class AccessMiddleware(BaseMiddleware):
             expensive = (command in ('/charts', '/analytics')
                          or text in ('📈 Аналитика', '📁 Скачать Excel')
                          or action == 'analytics' or action.startswith('charts:')
-                         or ':charts:' in action or action.endswith(':analytics'))
+                         or ':charts:' in action or action.endswith(':analytics') or action.endswith(':sav:poster'))
             if not rate_limiter.allow(user.id, expensive=expensive):
                 if rate_limiter.should_notify(user.id):
                     await event.answer('Слишком много запросов подряд. Подождите минуту и попробуйте снова.')
@@ -124,7 +127,15 @@ class AccessMiddleware(BaseMiddleware):
                 await event.answer('Бюджет или доступ изменился. Откройте /menu заново.')
                 return
         try:
-            return await handler(event, data)
+            # Refresh an old reply keyboard in response to activity, never as a
+            # startup broadcast. An active form retains its cancellation keyboard.
+            await refresh_menu_if_needed(db, event, state, MAIN_MENU)
+            result = await handler(event, data)
+            if isinstance(event, Message) and (event.text or '').split('@', 1)[0].split(' ', 1)[0] in ('/start', '/menu'):
+                await mark_ui_seen(db, user.id)
+            else:
+                await refresh_menu_if_needed(db, event, state, MAIN_MENU)
+            return result
         finally:
             # A family action intentionally changes the active context and
             # generates a fresh panel. All other forms retain their origin.
@@ -136,6 +147,21 @@ class AccessMiddleware(BaseMiddleware):
 
 router.message.outer_middleware(AccessMiddleware())
 router.callback_query.outer_middleware(AccessMiddleware())
+
+
+def create_dispatcher(path) -> Dispatcher:
+    """Track updates before FSM locks; drain before storage/isolation close."""
+    tracker = InFlightUpdates()
+
+    class DrainingStorage(SQLiteStorage):
+        async def close(self):
+            await tracker.drain(timeout=20)
+            await super().close()
+
+    dispatcher = Dispatcher(storage=DrainingStorage(path), events_isolation=SimpleEventIsolation(), disable_fsm=True)
+    dispatcher.update.outer_middleware(tracker)
+    dispatcher.update.outer_middleware(dispatcher.fsm)
+    return dispatcher
 
 
 def catalog(kind: str) -> tuple[str, ...]:
@@ -355,14 +381,16 @@ async def handle_message(message: Message, state: FSMContext) -> None:
         return
     if command == "/help":
         await state.clear()
-        await message.answer("Запись: кнопка → сумма → категория → подтверждение. Дату и комментарий можно изменить.\n\nкофе 350 рублей\nвчера продукты 1,5к; #дом ужин\n+ зарплата 150000\n\nМожно диктовать текст клавиатуре iPhone. Аудиосообщения и фото чеков пока не распознаются.\n\n/payments — регулярные платежи\n/search #отпуск — поиск по всем месяцам\n/analytics — графики и сравнение расходов\n/charts — график за месяц\n/tips — подсказки по бюджету\n/family — личный и общий бюджет\n\nМесяц в «Мой бюджет» применяется к истории, лимитам и Excel. Переводы между своими счетами не записывайте как доход или расход. /cancel отменяет ввод.\nПосле перезапуска незавершённый ввод нужно повторить; сохранённые операции остаются в базе.", reply_markup=MAIN_MENU)
+        await message.answer("Запись: кнопка → сумма → категория → подтверждение. Дату и комментарий можно изменить.\n\nкофе 350 рублей\nвчера продукты 1,5к; #дом ужин\n+ зарплата 150000\n\nМожно диктовать текст клавиатуре iPhone. Аудиосообщения и фото чеков пока не распознаются.\n\n/payments — регулярные платежи\n/search #отпуск — поиск по всем месяцам\n/analytics — графики и сравнение расходов\n/charts — график за месяц\n/tips — подсказки по бюджету\n/savings — накопления, цели и резерв\n/family — личный и общий бюджет\n\nМесяц в «Мой бюджет» применяется к истории, лимитам и Excel. Переводы между своими счетами не записывайте как доход или расход. /cancel отменяет ввод.\nОбновления устанавливаются автоматически. Незавершенный ввод сохраняется на 30 дней; после обновления продолжайте диалог. Сохраненные операции и планы остаются в базе.", reply_markup=MAIN_MENU)
         return
     menu_texts = {b.text for row in MAIN_MENU.keyboard + EXTRA_MENU.keyboard for b in row}
-    if text in menu_texts or command in ('/family', '/payments', '/search', '/analytics', '/charts', '/tips'):
+    if text in menu_texts or command in ('/family', '/payments', '/search', '/analytics', '/charts', '/tips', '/savings'):
         await state.clear()
     if await family.handle_message(message, state, db):
         return
     if await recurring.handle_message(message, state, db, user_id):
+        return
+    if await savings_ui.handle_message(message, state, db, user_id):
         return
     if text == '📈 Аналитика' or command == '/analytics':
         await show_analytics(message, user_id)
@@ -530,6 +558,8 @@ async def handle_callback(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer('Кнопка устарела. Откройте /menu.')
             return
     parts = data.split(":")
+    if await savings_ui.handle_callback(callback, state, db, user_id, data, scoped=scoped):
+        return
     if not scoped and (data == 'opening' or parts[0] == 'budget'):
         await callback.answer('Откройте настройки или лимиты заново: /menu')
         return
@@ -680,15 +710,19 @@ async def main() -> None:
     allowed_user_ids = settings.allowed_user_ids
     public_signup = settings.public_signup
     db = Database(settings.db_path, settings.timezone)
-    await asyncio.to_thread(backup_before_upgrade, settings.db_path)
+    await asyncio.to_thread(backup_before_upgrade, settings.db_path, include_savings=True)
     await db.init()
+    await init_runtime(db)
     logging.getLogger(__name__).info("Database initialized: %s", settings.db_path.resolve())
     logging.getLogger(__name__).info("Access mode: %s", "self-service /start" if public_signup else "allowlist")
-    dispatcher = Dispatcher(storage=MemoryStorage(), events_isolation=SimpleEventIsolation())
+    logging.getLogger(__name__).info("Release: %s; persistent dialogs enabled", get_release_version())
+    dispatcher = create_dispatcher(db.path)
+    await dispatcher.storage.init()
     dispatcher.include_router(router)
     async with Bot(settings.bot_token) as bot:
         await bot.set_my_commands([
             BotCommand(command='menu', description='Открыть бюджет'),
+            BotCommand(command='savings', description='Накопления, цели и резерв'),
             BotCommand(command='payments', description='Регулярные платежи'),
             BotCommand(command='analytics', description='Графики и сравнение расходов'),
             BotCommand(command='charts', description='График расходов за месяц'),

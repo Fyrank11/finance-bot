@@ -1,4 +1,4 @@
-"""Preserve legacy SQLite data before the first budget-schema upgrade."""
+"""Preserve SQLite data before budget and savings schema upgrades."""
 from __future__ import annotations
 
 import logging
@@ -9,7 +9,7 @@ from contextlib import closing
 from pathlib import Path
 
 
-def backup_before_upgrade(db_path: Path) -> Path | None:
+def backup_before_upgrade(db_path: Path, *, include_savings: bool = False) -> Path | None:
     """Back up an existing legacy database; any failure prevents migration."""
     db_path = db_path.resolve()
     if not db_path.exists():
@@ -23,7 +23,9 @@ def backup_before_upgrade(db_path: Path) -> Path | None:
         if not table:
             return None
         columns = {row[1] for row in source.execute("PRAGMA table_info(transactions)")}
-        if {"amount_minor", "version"} <= columns:
+        goals = {row[1] for row in source.execute("PRAGMA table_info(goals)")} if include_savings else set()
+        savings_current = not include_savings or {'target_minor', 'saved_minor', 'monthly_minor', 'version'} <= goals
+        if {"amount_minor", "version"} <= columns and savings_current:
             return None
 
         directory = db_path.parent / "backups"

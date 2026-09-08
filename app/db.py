@@ -92,9 +92,11 @@ class Database:
         from .family import init_family
         from .recurring import init_recurring
         from .access import init_access
+        from .savings import init_savings
         await init_family(self)
         await init_recurring(self)
         await init_access(self)
+        await init_savings(self)
 
     def _transaction_values(self, kind: str, category: str, amount: float, note: str, occurred_on: str | None) -> tuple:
         if kind not in ("income", "expense"):
@@ -232,7 +234,7 @@ class Database:
                 (user_id,),
             )).fetchall()
             goals = await (await db.execute(
-                "SELECT name,target,saved,due_date FROM goals WHERE user_id=? ORDER BY id DESC LIMIT 10", (user_id,)
+                "SELECT name,target,saved,due_date FROM goals WHERE user_id=? AND COALESCE(is_archived,0)=0 ORDER BY id DESC LIMIT 50", (user_id,)
             )).fetchall()
             opening_row = await (await db.execute("SELECT opening_minor FROM preferences WHERE user_id=?", (user_id,))).fetchone()
             opening = opening_row[0] if opening_row else 0

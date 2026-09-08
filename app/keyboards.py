@@ -5,14 +5,14 @@ MAIN_MENU = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📊 Мой бюджет"), KeyboardButton(text="📝 История")],
     [KeyboardButton(text="🎯 Лимиты"), KeyboardButton(text="📁 Скачать Excel")],
     [KeyboardButton(text="🗓 Платежи"), KeyboardButton(text="📈 Аналитика")],
+    [KeyboardButton(text="🌱 Накопления"), KeyboardButton(text="💡 Подсказки")],
     [KeyboardButton(text="🔎 Поиск"), KeyboardButton(text="👥 Семья")],
     [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="Ещё")],
 ], resize_keyboard=True, input_field_placeholder="Например: продукты 850")
 CANCEL_MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
 EXTRA_MENU = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="💡 Подсказки")],
-    [KeyboardButton(text="🤝 Долг"), KeyboardButton(text="🎯 Цель")],
-    [KeyboardButton(text="🧭 Распределение"), KeyboardButton(text="💬 Могу позволить?")],
+    [KeyboardButton(text="🌱 Накопления"), KeyboardButton(text="🎯 Мои цели")],
+    [KeyboardButton(text="🤝 Долг"), KeyboardButton(text="💬 Могу позволить?")],
     [KeyboardButton(text="💳 Кредитка?"), KeyboardButton(text="🏠 Меню")],
 ], resize_keyboard=True)
 

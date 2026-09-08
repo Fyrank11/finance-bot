@@ -58,3 +58,23 @@ def test_corrupt_database_stops_upgrade_without_changing_source(tmp_path):
         backup_before_upgrade(path)
     assert path.read_bytes() == original
     assert not (tmp_path / "backups").exists()
+
+
+def test_savings_upgrade_backs_up_existing_goals_once(tmp_path):
+    path = tmp_path / "finance.db"
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("CREATE TABLE transactions(id INTEGER, amount_minor INTEGER, version INTEGER)")
+        source.execute("CREATE TABLE goals(id INTEGER, name TEXT, target REAL, saved REAL)")
+        source.execute("INSERT INTO goals VALUES(1, 'Reserve', 150000, 25000)")
+        source.commit()
+
+    copied = backup_before_upgrade(path, include_savings=True)
+    assert copied is not None
+    with closing(sqlite3.connect(copied)) as backup:
+        assert backup.execute("SELECT * FROM goals").fetchall() == [(1, "Reserve", 150000, 25000)]
+    with closing(sqlite3.connect(path)) as source:
+        for column in ("target_minor", "saved_minor", "monthly_minor", "version"):
+            source.execute(f"ALTER TABLE goals ADD COLUMN {column} INTEGER")
+        source.commit()
+    assert backup_before_upgrade(path, include_savings=True) is None
+    assert len(list(copied.parent.glob("*.db"))) == 1
