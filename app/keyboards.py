@@ -10,6 +10,7 @@ MAIN_MENU = ReplyKeyboardMarkup(keyboard=[
 ], resize_keyboard=True, input_field_placeholder="Например: продукты 850")
 CANCEL_MENU = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
 EXTRA_MENU = ReplyKeyboardMarkup(keyboard=[
+    [KeyboardButton(text="💡 Подсказки")],
     [KeyboardButton(text="🤝 Долг"), KeyboardButton(text="🎯 Цель")],
     [KeyboardButton(text="🧭 Распределение"), KeyboardButton(text="💬 Могу позволить?")],
     [KeyboardButton(text="💳 Кредитка?"), KeyboardButton(text="🏠 Меню")],
