@@ -18,6 +18,24 @@ DESCRIPTION = (
     "Банковские счета автоматически не подключаются.\n\n"
     "Сейчас доступ по приглашению. Нажмите «Начать»."
 )
+PRIVACY_TEXT = (
+    "🔐 О ваших данных\n\n"
+    "На сервере сохраняются ваш Telegram ID, настройки и внесённые записи бюджета. "
+    "Сообщения и отчёты передаются через Telegram. Администратор сервиса имеет технический доступ к базе.\n\n"
+    "Другие пользователи не видят ваш личный бюджет. При вступлении в «Семью» "
+    "участники видят и могут менять общие записи; личная история туда не переносится.\n\n"
+    "Графики и подсказки рассчитываются на сервере без передачи записей внешней нейросети. "
+    "В истории можно исправлять и удалять отдельные операции, в меню — скачать Excel за выбранный месяц."
+)
+
+
+def profile_description(*, public_signup: bool = False) -> str:
+    if public_signup:
+        return DESCRIPTION.replace(
+            "Сейчас доступ по приглашению. Нажмите «Начать».",
+            "Нажмите «Начать» — личный бюджет станет доступен сразу. О данных: /privacy.",
+        )
+    return DESCRIPTION
 
 
 def welcome_text(*, family_budget: bool = False) -> str:
@@ -30,15 +48,17 @@ def welcome_text(*, family_budget: bool = False) -> str:
         "2. Откройте «Мой бюджет», чтобы увидеть остаток.\n"
         "3. В «Аналитике» посмотрите графики и подсказки.\n\n"
         "Начальные деньги — в настройках: это сумма перед первой записью.\n"
-        "/help — как пользоваться"
+        "Личный бюджет виден только вам среди пользователей бота. "
+        "Общий бюджет включается по отдельному приглашению.\n"
+        "/privacy — хранение данных · /help — как пользоваться"
     )
 
 
-async def apply_text_profile(bot) -> bool:
+async def apply_text_profile(bot, *, public_signup: bool = False) -> bool:
     """Update text only when this release starts. Profile failure must not stop polling."""
     try:
         for language in ("", "ru"):
-            await bot.set_my_description(description=DESCRIPTION, language_code=language)
+            await bot.set_my_description(description=profile_description(public_signup=public_signup), language_code=language)
             await bot.set_my_short_description(
                 short_description=SHORT_DESCRIPTION, language_code=language
             )

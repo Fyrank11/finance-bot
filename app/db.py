@@ -91,8 +91,10 @@ class Database:
             await db.commit()
         from .family import init_family
         from .recurring import init_recurring
+        from .access import init_access
         await init_family(self)
         await init_recurring(self)
+        await init_access(self)
 
     def _transaction_values(self, kind: str, category: str, amount: float, note: str, occurred_on: str | None) -> tuple:
         if kind not in ("income", "expense"):

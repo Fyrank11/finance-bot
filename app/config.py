@@ -14,6 +14,7 @@ class Settings:
     db_path: Path
     allowed_user_ids: frozenset[int]
     timezone: str = "Europe/Moscow"
+    public_signup: bool = False
 
 
 def load_settings() -> Settings:
@@ -31,4 +32,7 @@ def load_settings() -> Settings:
         ZoneInfo(timezone)
     except ZoneInfoNotFoundError as exc:
         raise RuntimeError("TIMEZONE must be an IANA timezone, e.g. Europe/Moscow") from exc
-    return Settings(token, Path(os.getenv("DB_PATH", "data/finance.db")), allowed, timezone)
+    signup = os.getenv("PUBLIC_SIGNUP", "false").strip().lower()
+    if signup not in ("true", "false"):
+        raise RuntimeError("PUBLIC_SIGNUP must be true or false")
+    return Settings(token, Path(os.getenv("DB_PATH", "data/finance.db")), allowed, timezone, signup == "true")
