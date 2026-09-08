@@ -14,9 +14,9 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message
 
 
-APP_VERSION = "2026.09.08-cashflow.1"
+APP_VERSION = "2026.09.08-guides.1"
 MENU_UPDATED_TEXT = (
-    "Меню обновлено. «Прогноз» показывает план по датам, «Обзор недели» — итоги и добровольную рассылку. "
+    "Меню стало компактнее: шесть основных кнопок. В разделах появились графические инструкции — «ℹ️ Как это работает». "
     "Перезапускать бот или повторять /start не нужно."
 )
 _UI_SCHEMA = """

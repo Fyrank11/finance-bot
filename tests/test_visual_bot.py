@@ -4,7 +4,7 @@ from datetime import date
 from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramNetworkError
-from aiogram.methods import SendPhoto, SetMyDescription
+from aiogram.methods import SendMessage, SendPhoto, SetMyDescription
 
 from app import bot as app, family
 from app.branding import apply_text_profile
@@ -33,7 +33,8 @@ def test_graph_and_tips_keep_month_and_budget_scope(tmp_path, monkeypatch):
         old_tips = chat.button('Подсказки')
         await db.select_month(1, '2025-08')
         await chat.tap(old_tips)
-        panel = chat.session.calls[-1].text
+        # First-use instructions may follow the requested financial panel.
+        panel = next(call.text for call in reversed(chat.session.calls) if isinstance(call, SendMessage))
         assert 'Сентябрь 2025' in panel and 'превышение — 50 ₽' in panel
         assert 'секретная' not in panel and '8 888' not in panel
         assert await db.selected_month(1) == '2025-08'

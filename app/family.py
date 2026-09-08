@@ -319,6 +319,7 @@ async def show_family(message, state, db, telegram_user_id: int) -> None:
             buttons += [[("Создать код приглашения", prefix + "invite")], [("Отозвать коды", prefix + "revoke"), ("Исключить участника", prefix + "members")]]
         else:
             buttons += [[("Выйти из общего бюджета", prefix + "leave")]]
+    buttons.append([("ℹ️ Как это работает", "guide:family")])
     await message.answer(text, reply_markup=inline(buttons))
 
 

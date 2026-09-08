@@ -61,7 +61,9 @@ RESERVE_FIELDS = (
 
 async def keyboard(db, message, rows):
     budget_id, revision = await family.active_budget_context(db, message.chat.id)
-    return inline([[(label, f'scope:{budget_id}:{revision}:sav:{action}') for label, action in row] for row in rows])
+    guides = {'guide:savings', 'guide:goals', 'guide:reserve', 'guide:savings_budget'}
+    return inline([[(label, action if action in guides else f'scope:{budget_id}:{revision}:sav:{action}')
+                    for label, action in row] for row in rows])
 
 
 def amount(text: str, *, positive: bool = False) -> int:
@@ -127,6 +129,7 @@ async def show_home(message, db, budget_id):
         [('🎯 Мои цели', 'goals:0'), ('🛟 Резерв', 'reserve')],
         [('🧮 Возможности бюджета', 'budget')], [('💡 Привычки накоплений', 'habits')],
         [('🖼 Постер', 'poster')],
+        [('ℹ️ Как это работает', 'guide:savings')],
     ]))
 
 
@@ -141,6 +144,7 @@ async def show_goals(message, db, budget_id, offset=0):
     if offset + 8 < len(goals): nav.append(('Далее ›', f'goals:{offset + 8}'))
     if nav: rows.append(nav)
     rows.append([('К накоплениям', 'home')])
+    rows.append([('ℹ️ Как это работает', 'guide:goals')])
     await message.answer('🎯 Мои цели\n' + ('Выберите цель или создайте новую.' if goals else 'Пока нет целей. Начните с суммы и срока.'), reply_markup=await keyboard(db, message, rows))
 
 
@@ -152,6 +156,7 @@ async def show_goal(message, db, budget_id, goal_id):
     await message.answer(goal_text(goal, today(db.timezone)), reply_markup=await keyboard(db, message, [
         [('Обновить накопленное', f'saved:{goal_id}')], [('Изменить план', f'edit:{goal_id}')],
         [('В архив', f'archive:{goal_id}'), ('Все цели', 'goals:0')],
+        [('ℹ️ Как это работает', 'guide:goals')],
     ]))
 
 
@@ -175,7 +180,7 @@ async def show_budget(message, db, budget_id):
         text += 'Нужны пять сумм вашего месячного плана. Несколько операций в боте не подтверждают полную картину доходов и расходов.\n\n'
     text += ('Это план, а не доступный баланс счета. Даже при положительном остатке сверяйте даты платежей и поступлений. '
              'При нестабильном доходе не рассчитывайте на неполученные премии. Все суммы можно изменить.')
-    await message.answer(text, reply_markup=await keyboard(db, message, [[('Задать / изменить план', 'budget_edit')], [('К накоплениям', 'home')]]))
+    await message.answer(text, reply_markup=await keyboard(db, message, [[('Задать / изменить план', 'budget_edit')], [('К накоплениям', 'home')], [('ℹ️ Как это работает', 'guide:savings_budget')]]))
 
 
 async def show_reserve(message, db, budget_id):
@@ -194,7 +199,7 @@ async def show_reserve(message, db, budget_id):
         text += f"Обновлено: {row['updated_on']}\n\n"
     text += ('Период резерва выбираете вы. 3–6 месяцев необходимых расходов — распространенный ориентир, а не норма для всех. '
              'Не учитывайте здесь деньги на другие цели. Расчет без доходности и роста расходов.')
-    await message.answer(text, reply_markup=await keyboard(db, message, [[('Задать / изменить резерв', 'reserve_edit')], [('К накоплениям', 'home')]]))
+    await message.answer(text, reply_markup=await keyboard(db, message, [[('Задать / изменить резерв', 'reserve_edit')], [('К накоплениям', 'home')], [('ℹ️ Как это работает', 'guide:reserve')]]))
 
 
 async def start_wizard(message, state, db, budget_id, kind, existing=None):

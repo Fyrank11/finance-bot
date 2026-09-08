@@ -68,7 +68,8 @@ def day_label(value):
 
 async def keyboard(db, message, rows):
     budget_id, revision = await family.active_budget_context(db, message.chat.id)
-    return inline([[(label, f'scope:{budget_id}:{revision}:cf:{action}') for label, action in row] for row in rows])
+    return inline([[(label, action if action == 'guide:forecast' else f'scope:{budget_id}:{revision}:cf:{action}')
+                    for label, action in row] for row in rows])
 
 
 async def monthly_savings_note(db, budget_id):
@@ -135,6 +136,7 @@ async def show_home(message, db, budget_id):
         [('💰 Сверить остаток', 'sync'), ('⚙️ Настроить расходы', 'setup')],
         [('➕ Ожидаемое поступление', 'new:income')],
         [('🗓 Планы по датам', 'events:0'), ('📅 По дням', 'days:0')],
+        [('ℹ️ Как это работает', 'guide:forecast')],
     ]))
 
 
@@ -163,6 +165,7 @@ async def show_days(message, db, budget_id, page=0):
         nav.append(('Позже ›', f'days:{page + 1}'))
     buttons = [nav] if nav else []
     buttons.append([('К прогнозу', 'home')])
+    buttons.append([('ℹ️ Как это работает', 'guide:forecast')])
     await message.answer(text, reply_markup=await keyboard(db, message, buttons))
 
 
@@ -188,6 +191,7 @@ async def show_events(message, db, budget_id, page=0):
     if nav:
         rows.append(nav)
     rows.append([('К прогнозу', 'home')])
+    rows.append([('ℹ️ Как это работает', 'guide:forecast')])
     await message.answer(text, reply_markup=await keyboard(db, message, rows))
 
 
@@ -211,6 +215,7 @@ async def show_event(message, db, budget_id, event_id):
              'Перевод в собственные накопления не записывайте как расход.')
     await message.answer(text, reply_markup=await keyboard(db, message, [
         [('Убрать из прогноза', f"close:{event['id']}")], [('Все планы', 'events:0')],
+        [('ℹ️ Как это работает', 'guide:forecast')],
     ]))
 
 

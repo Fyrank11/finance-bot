@@ -39,7 +39,8 @@ def budget_label(budget_id):
 
 async def keyboard(db, message, rows):
     budget_id, revision = await family.active_budget_context(db, message.chat.id)
-    return inline([[(label, f'scope:{budget_id}:{revision}:wk:{action}') for label, action in row] for row in rows])
+    return inline([[(label, action if action == 'guide:weekly' else f'scope:{budget_id}:{revision}:wk:{action}')
+                    for label, action in row] for row in rows])
 
 
 async def show_home(message, db, budget_id):
@@ -62,6 +63,7 @@ async def show_home(message, db, budget_id):
     rows = [[('Показать обзор', 'preview')], [('Настроить рассылку', 'setup')]]
     if subscription and subscription['enabled']:
         rows.append([('🔕 Отключить рассылку', 'off')])
+    rows.append([('ℹ️ Как это работает', 'guide:weekly')])
     await message.answer(text, reply_markup=await keyboard(db, message, rows))
 
 
@@ -75,6 +77,7 @@ async def begin(message, state, db, budget_id):
     })
     await state.set_state(WeeklyForm.day)
     rows = [[(label, f'day:{token}:{index}')] for index, label in enumerate(DAYS)]
+    rows.append([('ℹ️ Как это работает', 'guide:weekly')])
     await message.answer(f'Рассылка: {budget_label(budget_id)}.\nВ какой день присылать обзор?\n/cancel — отмена.',
                          reply_markup=await keyboard(db, message, rows))
 
@@ -205,7 +208,7 @@ async def handle_callback(callback, state, db, budget_id, data, *, scoped):
             await show_home(message, db, budget_id)
         elif action == 'preview':
             report = await weekly.build_digest(db, budget_id, now().astimezone(ZoneInfo(db.timezone)).date())
-            await message.answer(report, reply_markup=await keyboard(db, message, [[('Настроить рассылку', 'setup'), ('Назад', 'home')]]))
+            await message.answer(report, reply_markup=await keyboard(db, message, [[('Настроить рассылку', 'setup'), ('Назад', 'home')], [('ℹ️ Как это работает', 'guide:weekly')]]))
         else:
             await show_home(message, db, budget_id)
     await callback.answer()

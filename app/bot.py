@@ -25,8 +25,8 @@ from .export import export_xlsx
 from .finance import affordability, allocation, credit_card_advice, money
 from .inputs import (AMOUNT, EXPENSE_CATEGORIES, INCOME_CATEGORIES, category_name,
                      month_label, parse_amount, parse_date, quick_entry, shift_month, today, valid_month)
-from .keyboards import CANCEL_MENU, EXTRA_MENU, MAIN_MENU, categories, inline
-from . import family, recurring, savings_ui, cashflow_ui, weekly, weekly_ui
+from .keyboards import CANCEL_MENU, EXTRA_MENU, LEGACY_MENU_TEXTS, MAIN_MENU, categories, inline
+from . import family, recurring, savings_ui, cashflow_ui, weekly, weekly_ui, guides, navigation
 from .session_store import SQLiteStorage
 from .release_runtime import (InFlightUpdates, get_release_version, init_runtime,
                               mark_ui_seen, refresh_menu_if_needed)
@@ -78,7 +78,9 @@ class AccessMiddleware(BaseMiddleware):
             expensive = (command in ('/charts', '/analytics')
                          or text in ('📈 Аналитика', '📁 Скачать Excel')
                          or action == 'analytics' or action.startswith('charts:')
-                         or ':charts:' in action or action.endswith(':analytics') or action.endswith(':sav:poster'))
+                         or ':charts:' in action or action.endswith(':analytics') or action.endswith(':sav:poster')
+                         or action.startswith('guide:') or text == 'ℹ️ Как это работает'
+                         or action.endswith((':nav:export', ':nav:analytics')))
             if not rate_limiter.allow(user.id, expensive=expensive):
                 if rate_limiter.should_notify(user.id):
                     await event.answer('Слишком много запросов подряд. Подождите минуту и попробуйте снова.')
@@ -126,14 +128,36 @@ class AccessMiddleware(BaseMiddleware):
         stored = await state.get_data()
         if stored.get('_scope') not in (None, scope):
             await state.clear()
-            if isinstance(event, CallbackQuery) and not (event.data or '').startswith('family:'):
+            if isinstance(event, CallbackQuery) and not (event.data or '').startswith(('family:', 'guide:')):
                 await event.answer('Бюджет или доступ изменился. Откройте /menu заново.')
                 return
+        topic = None
         try:
             # Refresh an old reply keyboard in response to activity, never as a
             # startup broadcast. An active form retains its cancellation keyboard.
             await refresh_menu_if_needed(db, event, state, MAIN_MENU)
+            if isinstance(event, Message):
+                topic = guides.topic_for_message(event.text or '')
+            elif isinstance(event, CallbackQuery):
+                raw = event.data or ''
+                if raw.startswith('scope:'):
+                    try:
+                        _, selected, selected_revision, action = raw.split(':', 3)
+                        raw = action if (int(selected), int(selected_revision)) == (budget_id, revision) else ''
+                    except (ValueError, IndexError):
+                        raw = ''
+                # Navigation callbacks for financial views require current scope.
+                if raw.startswith('nav:') and (event.data or '').startswith('scope:'):
+                    topic = navigation.TOPICS.get(raw.removeprefix('nav:'))
+                elif not raw.startswith('nav:'):
+                    topic = guides.topic_for_callback(raw)
+            if topic and isinstance(event, Message):
+                await guides.maybe_show(db, message, user.id, topic)
             result = await handler(event, data)
+            # Callback handlers acknowledge the tap before optional image I/O.
+            # A slow help image must not leave Telegram's spinner running.
+            if topic and isinstance(event, CallbackQuery):
+                await guides.maybe_show(db, message, user.id, topic)
             if isinstance(event, Message) and (event.text or '').split('@', 1)[0].split(' ', 1)[0] in ('/start', '/menu'):
                 await mark_ui_seen(db, user.id)
             else:
@@ -146,6 +170,8 @@ class AccessMiddleware(BaseMiddleware):
                 current_budget, current_revision = await family.active_budget_context(db, user.id)
                 scope = f'{current_budget}:{current_revision}'
             await state.update_data(_scope=scope)
+            if topic:
+                await state.update_data(_help_topic=topic)
 
 
 router.message.outer_middleware(AccessMiddleware())
@@ -175,7 +201,7 @@ def catalog(kind: str) -> tuple[str, ...]:
 
 async def scoped_keyboard(message: Message, rows):
     budget_id, revision = await family.active_budget_context(db, message.chat.id)
-    return inline([[(label,f'scope:{budget_id}:{revision}:{action}') for label,action in row] for row in rows])
+    return inline([[(label, action if action.startswith('guide:') else f'scope:{budget_id}:{revision}:{action}') for label,action in row] for row in rows])
 
 
 def transaction_text(data: dict) -> str:
@@ -191,7 +217,8 @@ async def new_draft(message: Message, state: FSMContext, kind: str | None = None
     draft = {"kind": kind or "expense", "occurred_on": today(db.timezone).isoformat(), "note": "",
              "source_message_id": message.message_id, "token": secrets.token_hex(4)}
     draft.update(entry or {})
-    await state.update_data(draft=draft)
+    await state.update_data(draft=draft, _help_topic=draft['kind'])
+    await guides.maybe_show(db, message, message.from_user.id, draft['kind'])
     if entry:
         await confirm(message, state)
     else:
@@ -243,6 +270,10 @@ async def show_summary(message: Message, user_id: int) -> None:
                     f"\nОриентир в день до конца месяца: {money(daily)}"
                     '\nОриентир по внесённым данным, без будущих доходов и резерва на цели.')
     scope_label = 'Семейный бюджет' if user_id < 0 else 'Личный бюджет'
+    section_links = await navigation.section_rows(db, message, [
+        ('📝 История', 'history'), ('🎯 Лимиты', 'limits'),
+        ('🔎 Поиск', 'search'), ('📁 Скачать Excel', 'export'),
+    ])
     await message.answer(
         f"📊 {scope_label} · {month_label(month)}\n\nДоходы: {money(data['income'])}\nРасходы: {money(data['expense'])}"
         f"\nРазница за месяц: {money(data['net'])}\nРасчётный остаток: {money(data['balance'])}"
@@ -252,6 +283,7 @@ async def show_summary(message: Message, user_id: int) -> None:
             month_buttons,
             [("Текущий месяц", "current"), ("Выбрать месяц", "pick_month")],
             [("📈 Графики и сравнение", "analytics")],
+            *section_links, [('ℹ️ Как это работает', 'guide:budget')],
         ]))
 
 
@@ -265,7 +297,8 @@ async def show_history(message: Message, user_id: int, month: str, offset: int =
         navigation.append(("Далее ›", f"history:{month}:{offset + 8}"))
     if navigation:
         buttons.append(navigation)
-    await message.answer(f"📝 {month_label(month)}\n" + ("Нажмите на операцию, чтобы изменить или удалить её." if rows else "Операций пока нет."), reply_markup=inline(buttons) if buttons else MAIN_MENU)
+    buttons.append([('ℹ️ Как это работает', 'guide:history')])
+    await message.answer(f"📝 {month_label(month)}\n" + ("Нажмите на операцию, чтобы изменить или удалить её." if rows else "Операций пока нет."), reply_markup=inline(buttons))
 
 
 async def show_limits(message: Message, user_id: int) -> None:
@@ -282,7 +315,7 @@ async def show_limits(message: Message, user_id: int) -> None:
     chunks = ["\n".join(lines[i:i+15]) for i in range(0, len(lines), 15)] or ["Лимиты пока не заданы."]
     for part in chunks:
         await message.answer(f"🎯 {month_label(month)}\n\n{part}")
-    await message.answer("Лимиты сохраняются отдельно для каждого месяца.", reply_markup=await scoped_keyboard(message, [[("Задать / изменить лимит", f"budget:{month}")]]))
+    await message.answer("Лимиты сохраняются отдельно для каждого месяца.", reply_markup=await scoped_keyboard(message, [[("Задать / изменить лимит", f"budget:{month}")], [('ℹ️ Как это работает', 'guide:limits')]]))
 
 
 async def send_export(message: Message, user_id: int) -> None:
@@ -295,7 +328,7 @@ async def send_export(message: Message, user_id: int) -> None:
             break
         offset += len(page)
     content = await asyncio.to_thread(export_xlsx, await db.summary(user_id, month), rows, await db.budget_report(user_id, month))
-    await message.answer_document(BufferedInputFile(content, filename=f"budget_{month}.xlsx"), caption=f"Бюджет · {month_label(month)}. Снимок данных на момент выгрузки.")
+    await message.answer_document(BufferedInputFile(content, filename=f"budget_{month}.xlsx"), caption=f"Бюджет · {month_label(month)}. Снимок данных на момент выгрузки.", reply_markup=inline([[('ℹ️ Как это работает', 'guide:export')]]))
 
 
 async def show_chart(message: Message, budget_id: int, month: str | None = None) -> None:
@@ -312,7 +345,7 @@ async def show_chart(message: Message, budget_id: int, month: str | None = None)
     await message.answer_photo(
         BufferedInputFile(content, filename=f'expenses_{month}.png'),
         caption=f'📊 {scope} · {month_label(month)}\nСнимок по внесённым операциям. Дни без записей не подтверждают отсутствие трат.',
-        reply_markup=await scoped_keyboard(message, [[('💡 Подсказки к этому месяцу', f'tips:{month}')]]),
+        reply_markup=await scoped_keyboard(message, [[('💡 Подсказки к этому месяцу', f'tips:{month}')], [('ℹ️ Как это работает', 'guide:analytics')]]),
     )
 
 
@@ -324,7 +357,7 @@ async def show_tips(message: Message, budget_id: int, month: str | None = None) 
     await message.answer(
         f'💡 Подсказки · {month_label(month)}\n{scope}\n\n{body}'
         '\n\nРасчёты по вашим записям. Начните с одного подходящего шага.',
-        reply_markup=await scoped_keyboard(message, [[('📊 График этого месяца', f'charts:{month}')]]),
+        reply_markup=await scoped_keyboard(message, [[('📊 График этого месяца', f'charts:{month}')], [('ℹ️ Как это работает', 'guide:tips')]]),
     )
 
 
@@ -346,7 +379,10 @@ async def show_analytics(message: Message, budget_id: int) -> None:
         f"{month_label(data['month'])}: {money(data['current_minor']/100)}\n"
         f"{month_label(data['previous'])}: {money(data['previous_minor']/100)}\n\n{detail}"
         '\n\nСравниваются одинаковые по длительности отрезки по внесённым операциям.',
-        reply_markup=await scoped_keyboard(message, [[('💡 Что можно улучшить', f'tips:{month}')]]))
+        reply_markup=await scoped_keyboard(message, [[('💡 Что можно улучшить', f'tips:{month}')],
+            [('📬 Обзор недели', 'nav:weekly'), ('ℹ️', 'guide:weekly')],
+            [('📁 Скачать Excel', 'nav:export'), ('ℹ️', 'guide:export')],
+            [('ℹ️ Как это работает', 'guide:analytics')]]))
 
 
 async def show_search(message: Message, state: FSMContext, budget_id: int, query: str, offset: int = 0) -> None:
@@ -361,6 +397,7 @@ async def show_search(message: Message, state: FSMContext, budget_id: int, query
         nav.append(('Далее ›', f'search:{token}:{offset+8}'))
     if nav:
         buttons.append(nav)
+    buttons.append([('ℹ️ Как это работает', 'guide:search')])
     await message.answer(
         f"🔎 «{query}» · все месяцы\nНайдено: {result['count']}\n"
         f"Доходы: {money(result['income_minor']/100)}\nРасходы: {money(result['expense_minor']/100)}",
@@ -371,26 +408,139 @@ def metrics(data: dict) -> tuple[float, float]:
     return data["debts"].get("i_owe", 0), sum(max(g["target"] - g["saved"], 0) for g in data["goals"])
 
 
+async def show_settings(message):
+    await message.answer('Настройки бюджета:', reply_markup=await scoped_keyboard(message, [
+        [('Начальные деньги', 'opening'), ('ℹ️', 'guide:opening')],
+        [('Выбрать месяц', 'pick_month'), ('ℹ️', 'guide:month')],
+        [('ℹ️ Как это работает', 'guide:settings')],
+    ]))
+
+
+async def current_help_topic(state):
+    current, stored = await state.get_state(), await state.get_data()
+    if current:
+        group, _, field = current.partition(':')
+        simple = {'ForecastForm': 'forecast', 'WeeklyForm': 'weekly', 'RecurringForm': 'payments', 'FamilyForm': 'family'}
+        if group in simple:
+            return simple[group]
+        if group == 'SavingsForm':
+            kind = stored.get('savings_draft', {}).get('kind')
+            return {'budget': 'savings_budget', 'reserve': 'reserve'}.get(kind, 'goals')
+        if group == 'Form':
+            explicit = {'budget_category': 'limits', 'budget_amount': 'limits', 'opening': 'opening',
+                        'month': 'month', 'debt': 'debts', 'goal': 'goals', 'afford': 'afford', 'credit': 'credit', 'search': 'search'}
+            if field in explicit:
+                return explicit[field]
+            if stored.get('draft', {}).get('kind') in ('income', 'expense'):
+                return stored['draft']['kind']
+    topic = stored.get('_help_topic')
+    return topic if topic in navigation.GUIDE_CATALOG else None
+
+
+async def open_navigation(callback, state, budget_id, data, *, scoped):
+    if not data.startswith('nav:'):
+        return False
+    parts = data.split(':')
+    public_actions = {'help', 'begin', 'welcome', 'privacy'}
+    routes = set(navigation.TOPICS) | set(navigation.HUBS) | public_actions
+    if (len(parts) not in (2, 3) or parts[1] not in routes
+            or (len(parts) == 3 and (parts[1] != 'help' or not re.fullmatch(r'\d{1,2}', parts[2])))):
+        await callback.answer('Кнопка устарела. Откройте /menu.')
+        return True
+    action, message = parts[1], callback.message
+    if not scoped and action not in public_actions:
+        await callback.answer('Откройте раздел из текущего меню: /menu')
+        return True
+    # Reading instructions never abandons a partially completed transaction.
+    if action == 'help':
+        await navigation.show_help(message, db, int(parts[2]) if len(parts) == 3 else 0)
+    elif action == 'welcome':
+        await callback.answer()
+        await guides.show_welcome(db, message, callback.from_user.id, force=True)
+        return True
+    elif action == 'privacy':
+        await message.answer(PRIVACY_TEXT)
+    else:
+        await state.clear()
+        if action == 'begin':
+            await message.answer('Выберите «Доход» или «Расход» либо напишите «кофе 350». Подтвердите запись перед сохранением.', reply_markup=MAIN_MENU)
+        elif action in navigation.HUBS:
+            await navigation.show_hub(message, db, action)
+        elif action == 'summary':
+            await show_summary(message, budget_id)
+        elif action == 'history':
+            await show_history(message, budget_id, await db.selected_month(budget_id))
+        elif action == 'limits':
+            await show_limits(message, budget_id)
+        elif action == 'export':
+            await send_export(message, budget_id)
+        elif action == 'payments':
+            await recurring._show(message, db, budget_id)
+        elif action == 'savings':
+            await savings_ui.show_home(message, db, budget_id)
+        elif action == 'goals':
+            await savings_ui.show_goals(message, db, budget_id)
+        elif action == 'forecast':
+            await cashflow_ui.show_home(message, db, budget_id)
+        elif action == 'weekly':
+            await weekly_ui.show_home(message, db, budget_id)
+        elif action == 'analytics':
+            await show_analytics(message, budget_id)
+        elif action == 'tips':
+            await show_tips(message, budget_id)
+        elif action == 'family':
+            await family.show_family(message, state, db, callback.from_user.id)
+        elif action == 'settings':
+            await show_settings(message)
+        elif action == 'search':
+            await state.set_state(Form.search)
+            await message.answer('Введите категорию, слово из комментария или метку: например #отпуск. Поиск по всем месяцам.', reply_markup=CANCEL_MENU)
+        else:
+            target, prompt = {
+                'debts': (Form.debt, 'Сумма, направление, название. Пример: 30000 должен кредитка или 5000 мне Алексей'),
+                'afford': (Form.afford, 'Сколько стоит покупка?'),
+                'credit': (Form.credit, 'Введите сумму покупки.'),
+            }[action]
+            await state.set_state(target)
+            await message.answer(prompt, reply_markup=CANCEL_MENU)
+    await callback.answer()
+    return True
+
+
 @router.message()
 async def handle_message(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     user_id = await family.active_budget_id(db, message.from_user.id)
     command = text.split("@", 1)[0].split(" ", 1)[0]
+    if text == 'ℹ️ Как это работает':
+        topic = await current_help_topic(state)
+        if topic in navigation.GUIDE_CATALOG:
+            await guides.maybe_show(db, message, message.from_user.id, topic, force=True)
+        else:
+            await navigation.show_help(message, db)
+        return
     if command in ("/start", "/cancel", "/menu") or text in ("❌ Отмена", "🏠 Меню"):
         await state.clear()
         if command == '/start':
+            await guides.show_welcome(db, message, message.from_user.id)
             await message.answer(welcome_text(family_budget=user_id < 0), reply_markup=MAIN_MENU)
             return
         mode = 'Семейный' if user_id < 0 else 'Личный'
         await message.answer(f"{mode} бюджет. Добавьте доход или расход кнопкой либо напишите «кофе 350».\nНачальные деньги — в настройках. /help — подсказки.", reply_markup=MAIN_MENU)
         return
-    if command == "/help":
-        await state.clear()
-        await message.answer("Запись: кнопка → сумма → категория → подтверждение. Дату и комментарий можно изменить.\n\nкофе 350 рублей\nвчера продукты 1,5к; #дом ужин\n+ зарплата 150000\n\nМожно диктовать текст клавиатуре iPhone. Аудиосообщения и фото чеков пока не распознаются.\n\n/payments — регулярные платежи\n/search #отпуск — поиск по всем месяцам\n/analytics — графики и сравнение расходов\n/charts — график за месяц\n/tips — подсказки по бюджету\n/savings — накопления, цели и резерв\n/forecast — прогноз по датам\n/weekly — обзор недели и добровольная рассылка\n/family — личный и общий бюджет\n\nМесяц в «Мой бюджет» применяется к истории, лимитам и Excel. Переводы между своими счетами не записывайте как доход или расход. /cancel отменяет ввод.\nОбновления устанавливаются автоматически. Незавершенный ввод сохраняется на 30 дней; после обновления продолжайте диалог. Сохраненные операции и планы остаются в базе.", reply_markup=MAIN_MENU)
+    if command == '/help':
+        topic = text.partition(' ')[2].strip()
+        if topic in navigation.GUIDE_CATALOG:
+            await guides.maybe_show(db, message, message.from_user.id, topic, force=True)
+        else:
+            await navigation.show_help(message, db)
         return
-    menu_texts = {b.text for row in MAIN_MENU.keyboard + EXTRA_MENU.keyboard for b in row}
+    menu_texts = {b.text for row in MAIN_MENU.keyboard + EXTRA_MENU.keyboard for b in row} | LEGACY_MENU_TEXTS
     if text in menu_texts or command in ('/family', '/payments', '/search', '/analytics', '/charts', '/tips', '/savings', '/forecast', '/weekly'):
         await state.clear()
+    if text in ('🧭 Планы', '⚙️ Настройки и помощь'):
+        await navigation.show_hub(message, db, 'plans' if text == '🧭 Планы' else 'settings_help')
+        return
     if await family.handle_message(message, state, db):
         return
     if await recurring.handle_message(message, state, db, user_id):
@@ -440,7 +590,7 @@ async def handle_message(message: Message, state: FSMContext) -> None:
         elif text == "Ещё":
             await message.answer("Дополнительные разделы:", reply_markup=EXTRA_MENU)
         else:
-            await message.answer("Настройки бюджета:", reply_markup=await scoped_keyboard(message, [[("Начальные деньги", "opening")], [("Выбрать месяц", "pick_month")]]))
+            await show_settings(message)
         return
     legacy = {"🤝 Долг": (Form.debt, "Сумма, направление, название. Пример: 30000 должен кредитка или 5000 мне Алексей"),
               "🎯 Цель": (Form.goal, "Сумма и название. Пример: 250000 отпуск"),
@@ -549,6 +699,11 @@ async def handle_message(message: Message, state: FSMContext) -> None:
 
 @router.callback_query()
 async def handle_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    if await guides.handle_callback(callback, state, db):
+        return
+    if (callback.data or '').startswith('nav:'):
+        await open_navigation(callback, state, await family.active_budget_id(db, callback.from_user.id), callback.data, scoped=False)
+        return
     if await family.handle_callback(callback, state, db):
         return
     user_id = await family.active_budget_id(db, callback.from_user.id)
@@ -567,6 +722,8 @@ async def handle_callback(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer('Кнопка устарела. Откройте /menu.')
             return
     parts = data.split(":")
+    if await open_navigation(callback, state, user_id, data, scoped=scoped):
+        return
     if await savings_ui.handle_callback(callback, state, db, user_id, data, scoped=scoped):
         return
     if await cashflow_ui.handle_callback(callback, state, db, user_id, data, scoped=scoped):
@@ -729,6 +886,7 @@ async def main() -> None:
     logging.getLogger(__name__).info("Database initialized: %s", settings.db_path.resolve())
     logging.getLogger(__name__).info("Access mode: %s", "self-service /start" if public_signup else "allowlist")
     logging.getLogger(__name__).info("Release: %s; persistent dialogs enabled", get_release_version())
+    logging.getLogger(__name__).info("Visual guides enabled: %s topics; compact menu", len(guides.GUIDE_CATALOG))
     weekly_stop = asyncio.Event()
     dispatcher = create_dispatcher(db.path, before_drain=weekly_stop.set)
     await dispatcher.storage.init()

@@ -245,6 +245,7 @@ async def _show(message: Message, db: Database, budget_id: int, page: int = 0) -
         buttons.append(navigation)
         text.append(f"\nСтраница {page + 1} из {(count + 7) // 8}")
     buttons.extend([[("➕ Добавить платёж", f"rec:add:{budget_id}:{revision}")], [("⚙️ Мои расписания", "rec:schedules:0")]])
+    buttons.append([("ℹ️ Как это работает", "guide:payments")])
     text.append("\nРасход появится только после «Оплачено» и подтверждения, датой фактической отметки. Напоминания не отправляются.")
     await message.answer("\n".join(text), reply_markup=inline(buttons))
 
@@ -271,6 +272,7 @@ async def _show_schedules(message: Message, db: Database, budget_id: int, page: 
     if navigation:
         buttons.append(navigation)
     buttons.extend([[("➕ Добавить платёж", f"rec:add:{budget_id}:{revision}")], [("К платежам", "rec:home")]])
+    buttons.append([("ℹ️ Как это работает", "guide:payments")])
     await message.answer("\n".join(lines), reply_markup=inline(buttons))
 
 
