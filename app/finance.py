@@ -2,7 +2,10 @@ from __future__ import annotations
 
 
 def money(value: float) -> str:
-    return f"{value:,.0f} ₽".replace(",", " ")
+    formatted = f"{value:,.2f}".replace(",", " ")
+    if formatted.endswith(".00"):
+        formatted = formatted[:-3]
+    return formatted.replace(".", ",") + " ₽"
 
 
 def allocation(income: float, expense: float, debt: float, goals_remaining: float) -> str:
@@ -45,4 +48,3 @@ def credit_card_advice(price: float, balance: float, debt: float) -> str:
     if balance >= price:
         return "✅ Можно только ради льготного периода/кэшбэка, если вы сразу отложите всю сумму и точно погасите выписку полностью."
     return "❌ Не советую: собственных денег на полное погашение сейчас недостаточно. Кредитка не должна заменять доход."
-
