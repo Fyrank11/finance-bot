@@ -15,6 +15,9 @@ from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
 from aiogram.types import BotCommand, BufferedInputFile, CallbackQuery, Message
 
 from .backup import backup_before_upgrade
+from .branding import apply_text_profile, welcome_text
+from .charts import build_chart_data, render_expense_chart
+from .coaching import budget_tips
 from .config import load_settings
 from .db import Database
 from .export import export_xlsx
@@ -184,7 +187,7 @@ async def show_summary(message: Message, user_id: int) -> None:
         f"{upcoming}\n\nТоп расходов:\n{cats}", reply_markup=inline([
             month_buttons,
             [("Текущий месяц", "current"), ("Выбрать месяц", "pick_month")],
-            [("📈 Сравнить расходы", "analytics")],
+            [("📈 Графики и сравнение", "analytics")],
         ]))
 
 
@@ -231,8 +234,40 @@ async def send_export(message: Message, user_id: int) -> None:
     await message.answer_document(BufferedInputFile(content, filename=f"budget_{month}.xlsx"), caption=f"Бюджет · {month_label(month)}. Снимок данных на момент выгрузки.")
 
 
+async def show_chart(message: Message, budget_id: int, month: str | None = None) -> None:
+    month = valid_month(month) if month else await db.selected_month(budget_id)
+    snapshot = await build_chart_data(db, budget_id, month, today(db.timezone))
+    scope = 'Семейный бюджет' if budget_id < 0 else 'Личный бюджет'
+    try:
+        content = await asyncio.to_thread(render_expense_chart, snapshot, scope_label=scope)
+    except Exception:
+        # Do not log user data or turn a renderer failure into a broken budget flow.
+        logging.getLogger(__name__).warning('Expense chart rendering failed.')
+        await message.answer('График сейчас не удалось подготовить. Числа доступны в «Мой бюджет», подсказки — /tips.', reply_markup=MAIN_MENU)
+        return
+    await message.answer_photo(
+        BufferedInputFile(content, filename=f'expenses_{month}.png'),
+        caption=f'📊 {scope} · {month_label(month)}\nСнимок по внесённым операциям. Дни без записей не подтверждают отсутствие трат.',
+        reply_markup=await scoped_keyboard(message, [[('💡 Подсказки к этому месяцу', f'tips:{month}')]]),
+    )
+
+
+async def show_tips(message: Message, budget_id: int, month: str | None = None) -> None:
+    month = valid_month(month) if month else await db.selected_month(budget_id)
+    tips = await budget_tips(db, budget_id, month, today(db.timezone))
+    scope = 'Семейный бюджет' if budget_id < 0 else 'Личный бюджет'
+    body = '\n\n'.join(f'{index}. {tip}' for index, tip in enumerate(tips, 1))
+    await message.answer(
+        f'💡 Подсказки · {month_label(month)}\n{scope}\n\n{body}'
+        '\n\nРасчёты по вашим записям. Начните с одного подходящего шага.',
+        reply_markup=await scoped_keyboard(message, [[('📊 График этого месяца', f'charts:{month}')]]),
+    )
+
+
 async def show_analytics(message: Message, budget_id: int) -> None:
-    data = await comparison(db, budget_id, await db.selected_month(budget_id), today(db.timezone))
+    month = await db.selected_month(budget_id)
+    await show_chart(message, budget_id, month)
+    data = await comparison(db, budget_id, month, today(db.timezone))
     if not data['days']:
         await message.answer('Для будущего месяца сравнение ещё недоступно.', reply_markup=MAIN_MENU)
         return
@@ -246,7 +281,8 @@ async def show_analytics(message: Message, budget_id: int) -> None:
         f"📈 Сравнение расходов за первые {data['days']} дн.\n\n"
         f"{month_label(data['month'])}: {money(data['current_minor']/100)}\n"
         f"{month_label(data['previous'])}: {money(data['previous_minor']/100)}\n\n{detail}"
-        '\n\nСравниваются одинаковые по длительности отрезки по внесённым операциям.', reply_markup=MAIN_MENU)
+        '\n\nСравниваются одинаковые по длительности отрезки по внесённым операциям.',
+        reply_markup=await scoped_keyboard(message, [[('💡 Что можно улучшить', f'tips:{month}')]]))
 
 
 async def show_search(message: Message, state: FSMContext, budget_id: int, query: str, offset: int = 0) -> None:
@@ -278,15 +314,18 @@ async def handle_message(message: Message, state: FSMContext) -> None:
     command = text.split("@", 1)[0].split(" ", 1)[0]
     if command in ("/start", "/cancel", "/menu") or text in ("❌ Отмена", "🏠 Меню"):
         await state.clear()
+        if command == '/start':
+            await message.answer(welcome_text(family_budget=user_id < 0), reply_markup=MAIN_MENU)
+            return
         mode = 'Семейный' if user_id < 0 else 'Личный'
         await message.answer(f"{mode} бюджет. Добавьте доход или расход кнопкой либо напишите «кофе 350».\nНачальные деньги — в настройках. /help — подсказки.", reply_markup=MAIN_MENU)
         return
     if command == "/help":
         await state.clear()
-        await message.answer("Запись: кнопка → сумма → категория → подтверждение. Дату и комментарий можно изменить.\n\nкофе 350 рублей\nвчера продукты 1,5к; #дом ужин\n+ зарплата 150000\n\nМожно диктовать текст клавиатуре iPhone. Аудиосообщения и фото чеков пока не распознаются.\n\n/payments — регулярные платежи\n/search #отпуск — поиск по всем месяцам\n/analytics — сравнение расходов\n/family — личный и общий бюджет\n\nМесяц в «Мой бюджет» применяется к истории, лимитам и Excel. Переводы между своими счетами не записывайте как доход или расход. /cancel отменяет ввод.\nПосле перезапуска незавершённый ввод нужно повторить; сохранённые операции остаются в базе.", reply_markup=MAIN_MENU)
+        await message.answer("Запись: кнопка → сумма → категория → подтверждение. Дату и комментарий можно изменить.\n\nкофе 350 рублей\nвчера продукты 1,5к; #дом ужин\n+ зарплата 150000\n\nМожно диктовать текст клавиатуре iPhone. Аудиосообщения и фото чеков пока не распознаются.\n\n/payments — регулярные платежи\n/search #отпуск — поиск по всем месяцам\n/analytics — графики и сравнение расходов\n/charts — график за месяц\n/tips — подсказки по бюджету\n/family — личный и общий бюджет\n\nМесяц в «Мой бюджет» применяется к истории, лимитам и Excel. Переводы между своими счетами не записывайте как доход или расход. /cancel отменяет ввод.\nПосле перезапуска незавершённый ввод нужно повторить; сохранённые операции остаются в базе.", reply_markup=MAIN_MENU)
         return
     menu_texts = {b.text for row in MAIN_MENU.keyboard + EXTRA_MENU.keyboard for b in row}
-    if text in menu_texts or command in ('/family', '/payments', '/search', '/analytics'):
+    if text in menu_texts or command in ('/family', '/payments', '/search', '/analytics', '/charts', '/tips'):
         await state.clear()
     if await family.handle_message(message, state, db):
         return
@@ -294,6 +333,12 @@ async def handle_message(message: Message, state: FSMContext) -> None:
         return
     if text == '📈 Аналитика' or command == '/analytics':
         await show_analytics(message, user_id)
+        return
+    if command == '/charts':
+        await show_chart(message, user_id)
+        return
+    if text == '💡 Подсказки' or command == '/tips':
+        await show_tips(message, user_id)
         return
     if text == '🔎 Поиск' or command == '/search':
         query = text.partition(' ')[2].strip() if command == '/search' else ''
@@ -510,6 +555,19 @@ async def handle_callback(callback: CallbackQuery, state: FSMContext) -> None:
         elif data == 'analytics':
             await state.clear()
             await show_analytics(message, user_id)
+        elif parts[0] in ('charts', 'tips'):
+            if not scoped or len(parts) != 2:
+                await callback.answer('Откройте аналитику заново: /analytics')
+                return
+            month = valid_month(parts[1])
+            await state.clear()
+            # Acknowledge before rendering or uploading the image.
+            await callback.answer()
+            if parts[0] == 'charts':
+                await show_chart(message, user_id, month)
+            else:
+                await show_tips(message, user_id, month)
+            return
         elif parts[0] == 'search':
             if stored.get('search_token') != parts[1]:
                 await callback.answer('Поиск устарел. Откройте /search снова.')
@@ -597,12 +655,15 @@ async def main() -> None:
         await bot.set_my_commands([
             BotCommand(command='menu', description='Открыть бюджет'),
             BotCommand(command='payments', description='Регулярные платежи'),
-            BotCommand(command='analytics', description='Сравнение расходов'),
+            BotCommand(command='analytics', description='Графики и сравнение расходов'),
+            BotCommand(command='charts', description='График расходов за месяц'),
+            BotCommand(command='tips', description='Подсказки по вашему бюджету'),
             BotCommand(command='search', description='Поиск записей и меток'),
             BotCommand(command='family', description='Семейный бюджет'),
             BotCommand(command='help', description='Как пользоваться'),
             BotCommand(command='whoami', description='Узнать свой Telegram ID'),
         ])
+        await apply_text_profile(bot)
         await dispatcher.start_polling(bot)
 
 

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.session.base import BaseSession
 from aiogram.fsm.storage.memory import MemoryStorage, SimpleEventIsolation
-from aiogram.methods import AnswerCallbackQuery, SendDocument, SendMessage
+from aiogram.methods import AnswerCallbackQuery, SendDocument, SendMessage, SendPhoto
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from app import bot as app
@@ -24,7 +24,7 @@ class Session(BaseSession):
         self.calls.append(method)
         if isinstance(method, AnswerCallbackQuery):
             return True
-        assert isinstance(method, (SendMessage, SendDocument)), type(method)
+        assert isinstance(method, (SendMessage, SendDocument, SendPhoto)), type(method)
         return Message(message_id=10000 + len(self.calls), date=datetime.now(timezone.utc),
                        chat=Chat(id=int(method.chat_id), type="private"), text=getattr(method, "text", ""))
 
