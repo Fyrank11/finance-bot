@@ -199,6 +199,10 @@ def catalog(kind: str) -> tuple[str, ...]:
     return INCOME_CATEGORIES if kind == "income" else EXPENSE_CATEGORIES
 
 
+def transaction_kind_label(kind: str) -> str:
+    return "дохода" if kind == "income" else "расхода"
+
+
 async def scoped_keyboard(message: Message, rows):
     budget_id, revision = await family.active_budget_context(db, message.chat.id)
     return inline([[(label, action if action.startswith('guide:') else f'scope:{budget_id}:{revision}:{action}') for label,action in row] for row in rows])
@@ -223,13 +227,17 @@ async def new_draft(message: Message, state: FSMContext, kind: str | None = None
         await confirm(message, state)
     else:
         await state.set_state(Form.amount)
-        await message.answer("Введите сумму в рублях. Например: 850 или 1 250,50.\nМожно сразу: 850 продукты", reply_markup=CANCEL_MENU)
+        example = "80000 зарплата" if draft['kind'] == 'income' else "850 продукты"
+        await message.answer(
+            f"Введите сумму {transaction_kind_label(draft['kind'])} в рублях. Например: 1 250,50.\n"
+            f"Можно сразу: {example}", reply_markup=CANCEL_MENU,
+        )
 
 
 async def choose_category(message: Message, state: FSMContext) -> None:
     draft = (await state.get_data())["draft"]
     await state.set_state(Form.category)
-    await message.answer("Выберите категорию или напишите свою:", reply_markup=categories(catalog(draft["kind"]), f"cat:{draft['token']}"))
+    await message.answer(f"Выберите категорию {transaction_kind_label(draft['kind'])} или напишите свою:", reply_markup=categories(catalog(draft["kind"]), f"cat:{draft['token']}"))
 
 
 async def confirm(message: Message, state: FSMContext) -> None:
@@ -781,7 +789,7 @@ async def handle_callback(callback: CallbackQuery, state: FSMContext) -> None:
                     await choose_category(message, state)
                 elif action in ("amount", "date", "note"):
                     await state.set_state({"amount": Form.amount, "date": Form.date, "note": Form.note}[action])
-                    await message.answer({"amount": "Введите новую сумму.", "date": "Дата: ДД.ММ.ГГГГ, «сегодня» или «вчера».", "note": "Введите комментарий (до 500 символов), либо - чтобы убрать его."}[action])
+                    await message.answer({"amount": f"Введите новую сумму {transaction_kind_label(draft['kind'])}.", "date": "Дата: ДД.ММ.ГГГГ, «сегодня» или «вчера».", "note": "Введите комментарий (до 500 символов), либо - чтобы убрать его."}[action])
             else:
                 await callback.answer("Сначала завершите текущий шаг ввода.")
                 return

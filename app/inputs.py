@@ -131,6 +131,10 @@ def quick_entry(text: str, kind: str | None = None, *, current: date | None = No
     elif last:
         category, amount = last.groups()
     else:
+        if kind == "income":
+            raise ValueError("Введите сумму дохода или сумму с категорией: 80000 зарплата; комментарий")
+        if kind == "expense":
+            raise ValueError("Введите сумму расхода или сумму с категорией: 850 продукты; комментарий")
         raise ValueError("Пример: кофе 350 рублей или + зарплата 150000; комментарий")
     # Digits left outside the amount mean multiple sums or malformed input.
     # Numeric details belong in the note, where they cannot alter the sum.
