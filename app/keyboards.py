@@ -4,7 +4,7 @@ MAIN_MENU = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="➕ Доход"), KeyboardButton(text="➖ Расход")],
     [KeyboardButton(text="📊 Мой бюджет"), KeyboardButton(text="🧭 Планы")],
     [KeyboardButton(text="📈 Аналитика"), KeyboardButton(text="⚙️ Настройки и помощь")],
-], resize_keyboard=True, input_field_placeholder="Например: продукты 850")
+], resize_keyboard=True, input_field_placeholder="Доход или расход: сумма и категория")
 CANCEL_MENU = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="ℹ️ Как это работает"), KeyboardButton(text="❌ Отмена")],
 ], resize_keyboard=True)
